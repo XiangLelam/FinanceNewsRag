@@ -1,6 +1,6 @@
 import json
 from redis.asyncio import Redis
-from redis.commands.search.field import TextField, VectorField, NumericField
+from redis.commands.search.field import NumericField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from redis.commands.json.path import Path
@@ -34,12 +34,12 @@ async def add_chat_messages(rdb, chat_id, messages):
 async def chat_exists(rdb, chat_id):
     return await rdb.exists(CHAT_IDX_PREFIX + chat_id)
 
-async def get_chat_messages(rdb, chat_id, last_n = None):
+async def get_chat_messages(rdb, chat_id, last_n=None):
     key = CHAT_IDX_PREFIX + chat_id
     if last_n is None:
-        messages = await rdb.json().get(CHAT_IDX_PREFIX + chat_id , '$.messages[*]')
+        messages = await rdb.json().get(key, '$.messages[*]')
     else:
-        messages = await rdb().json().get(CHAT_IDX_PREFIX + chat_id, f'messages[-{last_n}:]')
+        messages = await rdb.json().get(key, f'$.messages[-{last_n}:]')
     return messages if messages else []
 async def get_all_chats(rdb):
     q = Query('*').sort_by('created', asc=False)

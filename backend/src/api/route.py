@@ -1,10 +1,14 @@
 from uuid import uuid4
 from time import time
-from fastapi import APIRouter,Depends, HTTPException
+from fastapi import APIRouter,Depends, HTTPException, Query
 from pydantic import BaseModel
 from src.data.chat_db import get_redis, create_chat, chat_exists,add_chat_messages,get_chat_messages
-from src.agent.chat import rag_recall,generate_answer
+from src.agent.chat import rag_recall,generate_answer,build_prompt
 from src.config.prompt import PROMPT
+from sse_starlette.sse import EventSourceResponse
+import asyncio
+import json
+
 router = APIRouter()
 
 class ChatIn(BaseModel):
@@ -25,61 +29,74 @@ async def create_new_chat(rdb = Depends(get_rdb)):
     await create_chat(rdb, chat_id, created)
     return {'id': chat_id}
 
-@router.post('/chats/{chat_id}')
-async def chat(chat_id: str, chat_in: ChatIn, rdb=Depends(get_rdb)):
 
-    # 1️⃣ Check chat exists
+
+@router.get('/chats/{chat_id}')
+async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_rdb)):
+
     if not await chat_exists(rdb, chat_id):
-        raise HTTPException(status_code=404, detail=f'Chat {chat_id} does not exist')
+        raise HTTPException(status_code=404, detail="Chat not found")
 
-    # 2️⃣ Save user message
-    user_msg = {"role": "user", "content": chat_in.message}
+    user_msg = {"role": "user", "content": message}
     await add_chat_messages(rdb, chat_id, [user_msg])
 
-    # 3️⃣ Get recent history
     history = await get_chat_messages(rdb, chat_id, last_n=5)
 
-    # 4️⃣ Retrieve knowledge (RAG)
-    top_docs = rag_recall(chat_in.message)
+    top_docs = rag_recall(message)
 
-    # 🔥 5️⃣ Confidence check (VERY IMPORTANT)
-    if not top_docs or top_docs[0][1] < 0.4:
-        response_text = "I can't provide an answer for this question."
-    else:
-        # 6️⃣ Build context
-        rag_context = "\n\n".join([doc for doc, _ in top_docs])
+    # ✅ FIXED
+    context = "\n\n".join([doc for doc, _ in top_docs])
 
-        # 7️⃣ Build chat history string
-        history_text = ""
-        for msg in history:
-            history_text += f"{msg['role']}: {msg['content']}\n"
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
 
-        # 8️⃣ Final prompt
-        final_prompt = f"""
+    final_prompt = f"""
 {PROMPT}
 
 Chat History:
 {history_text}
 
 Context:
-{rag_context}
+{context}
 
 User Question:
-{chat_in.message}
+{message}
 
 Answer:
 """
 
-        # 9️⃣ Generate
-        response_text = generate_answer(final_prompt)
+    async def event_generator():
+        try:
+            full_response = generate_answer(final_prompt, max_tokens=100)
 
-    # 🔟 Save assistant response
-    bot_message = {"role": "assistant", "content": response_text}
-    await add_chat_messages(rdb, chat_id, [bot_message])
+            for i in range(0, len(full_response), 50):
+                chunk = full_response[i:i+50]
 
-    # ✅ Return response + sources
-    return {
-        "response": response_text,
-        "chat_id": chat_id,
-        "sources": [doc for doc, _ in top_docs] if top_docs else []
-    }
+                yield json.dumps({
+                    "role": "assistant",
+                    "content": chunk,
+                    "error": False
+                })
+
+                await asyncio.sleep(0.05)
+
+            # ✅ Safe Redis save
+            try:
+                await add_chat_messages(rdb, chat_id, [
+                    {"role": "assistant", "content": full_response}
+                ])
+            except Exception as e:
+                print("⚠️ Redis error:", e)
+
+            # ✅ End signal (important for frontend)
+            yield json.dumps({"event": "end"})
+
+        except Exception as e:
+            print("❌ STREAM ERROR:", e)
+
+            yield json.dumps({
+                "role": "assistant",
+                "content": "Internal error occurred",
+                "error": True
+            })
+
+    return EventSourceResponse(event_generator(), media_type="text/event-stream")

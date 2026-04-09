@@ -1,9 +1,4 @@
-from openai import OpenAI
-import numpy as np
 import faiss
-import tqdm
-from src.data.datatabase import load_all_data,connect_db
-import json
 import pickle
 from sentence_transformers import SentenceTransformer
 

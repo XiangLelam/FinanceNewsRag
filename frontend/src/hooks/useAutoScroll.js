@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 const SCROLL_THRESHOLD = 10;
 
 function useAutoScroll(active){
@@ -9,7 +9,7 @@ function useAutoScroll(active){
     useEffect(() => {
         const resizeObserver = new ResizeObserver(() => {
             const {scrollHeight, clientHeight, scrollTop} = document.documentElement;
-            if(!isDisabled.current && scrollHeight - clientHeight, scrollTop){
+            if(!isDisabled.current && scrollHeight - clientHeight > scrollTop){
                 document.documentElement.scrollTo({
                     top : scrollHeight - clientHeight,
                     behavior: 'smooth'

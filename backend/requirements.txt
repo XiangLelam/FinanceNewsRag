@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+redis
+sse-starlette
+sentence-transformers
+transformers
+torch
+faiss-cpu
+yfinance
+lxml_html_clean
+newspaper3k
+pymongo
+numpy

@@ -1,10 +1,8 @@
-import time
-from datetime import datetime, timezone
 import yfinance as yf
 from newspaper import Article
 from src.data.datatabase import save_data,connect_db
 import re
-from src.data.vectordb import VectorDB
+
 class YahooIngestor:
     def __init__(self, tickers):
         self.tickers = tickers

@@ -1,66 +1,87 @@
-import { useState,useEffect } from 'react';
-import { userImmer } from 'use-immer';
-import ChatMessages from '@/components/ChatMessages';
-import ChatInput from '@/components/ChatInput';
+import { useState } from 'react';
+import { useImmer } from 'use-immer';
+import api from '../api';
+import {parseSSEStream} from '../utils';
+import ChatMessages from './ChatMessage';
+import ChatInput from './ChatInput';
 
 function Chatbot() {
     const [chatId, setChatId] = useState(null);
-    const [messages, setMessage] = useImmer([]);
+    const [messages, setMessages] = useImmer([]);
     const [newMessage, setNewMessage] = useState('')
     const isLoading = messages.length && messages[messages.length -1].loading;
-    async function submitNewMessage(){
+    async function submitNewMessage() {
         const trimmedMessage = newMessage.trim();
-        if(!trimmedMessage || isLoading)return;
+        if (!trimmedMessage || isLoading) return;
 
-        setMessages(draft => [...draft,
-            {role:'user', content: trimmedMessage},
-            {role: 'assistant',content: '', sources:[], loading:true}
+        // Add user and empty assistant message
+        setMessages(draft => [
+            ...draft,
+            { role: 'user', content: trimmedMessage },
+            { role: 'assistant', content: '', loading: true }
         ]);
         setNewMessage('');
+
         let chatIdOrNew = chatId;
-        try{
-            if(!chatId){
-                const{id} = await api.createChat();
+
+        try {
+            if (!chatId) {
+                const { id } = await api.createChat();
                 setChatId(id);
                 chatIdOrNew = id;
             }
-            const stream = await api.sendChatMessage(chatIdOrNew, trimmedMessage);
-            for await(const textChunk of parseSSEStream(stream)){
-                setMessages(draft =>{
-                    draft[draft.length -1].content+=textChunk;
-                });
-            }
-            setMessages(draft => {
-                draft[draft.length -1].loading = false;
-            })
-        }catch(err){
+
+            // Start SSE streaming
+            const sse = api.startChatStream(
+                chatIdOrNew,
+                trimmedMessage,
+                (data) => {
+                    // Append chunk to last message
+                    setMessages(draft => {
+                        draft[draft.length - 1].content += data.content;
+                    });
+                },
+                (err) => {
+                    setMessages(draft => {
+                        draft[draft.length - 1].loading = false;
+                        draft[draft.length - 1].error = true;
+                    });
+                },
+                () => {
+                    setMessages(draft => {
+                        draft[draft.length - 1].loading = false;
+                    });
+                }
+            );
+
+        } catch (err) {
             console.log(err);
             setMessages(draft => {
-                draft[draft.length -1].loading = false;
+                draft[draft.length - 1].loading = false;
                 draft[draft.length - 1].error = true;
-            })
+            });
         }
     }
     
     return(
         <div className='relative grow flex flex-col gap-6 pt-6'>
-            {messages.length == 0 && (
+            {messages.length === 0 && (
                 <div className='mt-3 font-urbanist text-primary-blue text-xl font-light space-y-2'>
                     <p>Welcome</p>
                     <p>I am finance chatbot</p>
                     <p>Ask me anything about latest finance news</p>
                 </div>
             )}
-            <ChatMessages>
+            <ChatMessages
                 messages={messages}
                 isLoading = {isLoading}
-            </ChatMessages>
-            <ChatInput>
+            />
+            <ChatInput
                 newMessage = {newMessage}
                 isLoading = {isLoading}
                 setNewMessage = {setNewMessage}
                 submitNewMessage={submitNewMessage}
-            </ChatInput>
+            />
         </div>
         
     )
