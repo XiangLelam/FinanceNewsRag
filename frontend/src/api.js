@@ -8,17 +8,21 @@ function startChatStream(chatId, message, onMessage, onError, onComplete) {
         console.log('SSE connection opened');
     };
 
+    // 🔹 Handles streaming text chunks
     evtSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
-
-        if (data.event === "end") {
-            evtSource.close();
-            if (onComplete) onComplete();
-            return;
-        }
-
         onMessage(data);
     };
+
+    // ✅ ADD IT HERE
+    evtSource.addEventListener("end", (event) => {
+        const data = JSON.parse(event.data);
+
+        console.log("Sources:", data.sources);
+
+        evtSource.close();
+        if (onComplete) onComplete(data.sources);
+    });
 
     evtSource.onerror = (err) => {
         console.log('SSE closed');

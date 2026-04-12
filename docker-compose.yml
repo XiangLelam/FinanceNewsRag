@@ -1,4 +1,11 @@
 services:
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
   backend:
     build: .
     container_name: finance-app
@@ -6,6 +13,7 @@ services:
       - "8000:8000"
     depends_on:
       - redis
+      - ollama
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -15,3 +23,6 @@ services:
     container_name: redis-json
     ports:
       - "6379:6379"
+
+volumes:
+  ollama_data:

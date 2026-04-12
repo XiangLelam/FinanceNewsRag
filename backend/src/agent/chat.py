@@ -1,22 +1,16 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from sentence_transformers import SentenceTransformer, util
 from src.data.vectordb import VectorDB
-from src.data.build_data import update_knowledge
-import pickle
+from src.data.knowledge_process import KnowledgeProcessing
 from src.config.prompt import PROMPT
+import ollama
 
+
+client = ollama.Client(host='http://host.docker.internal:11434')
 # =========================
 # DEVICE SETUP
 # =========================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# =========================
-# LOAD VECTOR DB
-# =========================
-
-vectordb = VectorDB()
-vectordb.load()
 
 # =========================
 # LOAD MODELS
@@ -24,37 +18,32 @@ vectordb.load()
 # Sentence Transformer for reranking
 rank_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Chat model
-chat_model_name = "gpt2"
-chat_tokenizer = AutoTokenizer.from_pretrained(chat_model_name)
-chat_model = AutoModelForCausalLM.from_pretrained(chat_model_name).to(device)
-chat_model.eval()
-
 
 # =========================
 # HELPER FUNCTIONS
 # =========================
 
 def get_similar_queries(query, num=3):
-    """Generate multiple query variations using the LLM."""
-    results = []
-    prompt = f"Rewrite the following query in different ways:\n{query}\n"
+    prompt = f"""
+Generate {num} different search query variations for semantic search.
 
-    inputs = chat_tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = chat_model.generate(
-        **inputs,
-        max_new_tokens=50,
-        do_sample=True,
-        temperature=0.9,
-        top_p=0.95,
-        num_return_sequences=num
+Original query:
+{query}
+
+Return only the queries, one per line.
+"""
+
+    response = client.chat(
+        model="mistral",
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    for out in outputs:
-        text = chat_tokenizer.decode(out, skip_special_tokens=True)
-        results.append(text.replace(prompt, "").strip())
+    text = response["message"]["content"]
 
-    return list(set(results))
+    queries = text.split("\n")
+    queries = [q.strip("-• ") for q in queries if q.strip()]
+
+    return list(set(queries))[:num]
 
 def is_confident(top_docs, threshold=0.4):
     return top_docs and top_docs[0][1] >= threshold
@@ -64,6 +53,16 @@ def rag_recall(query, top_k=3):
     1. Retrieve top documents using FAISS (vector DB)
     2. Rerank using sentence transformer embeddings
     """
+    # 🔥 ALWAYS rebuild knowledge for each query
+    print("🔄 Building knowledge base for query...")
+
+    kp = KnowledgeProcessing(query)
+    kp.update_knowledge()
+
+    # 🔥 Load the newly built DB
+    vectordb = VectorDB()
+    vectordb.load()
+    
     # 1️⃣ Retrieve multiple variations
     queries = get_similar_queries(query)
     all_results = []
@@ -72,19 +71,24 @@ def rag_recall(query, top_k=3):
         results = vectordb.search(q, k=5)  # returns (doc, score)
         all_results.extend(results)
 
-    # remove duplicates
+    # remove duplicates by text content
     unique_docs = {}
     for doc, score in all_results:
-        if doc not in unique_docs:
-            unique_docs[doc] = score
+        # Handle both dict and string formats
+        text_key = doc["text"] if isinstance(doc, dict) else str(doc)
+        if text_key not in unique_docs:
+            unique_docs[text_key] = (doc, score)
 
-    docs = list(unique_docs.keys())
+    # Extract docs with their scores
+    docs_with_scores = list(unique_docs.values())
+    docs = [doc for doc, score in docs_with_scores]
 
     # 2️⃣ Rerank using sentence embeddings
     if docs:
-        embeddings = rank_model.encode([query] + docs, convert_to_tensor=True)
-        query_emb = embeddings[0]
-        doc_embs = embeddings[1:]
+        query_emb = rank_model.encode(query, convert_to_tensor=True)
+        # Extract text for encoding
+        doc_texts = [doc["text"] if isinstance(doc, dict) else doc for doc in docs]
+        doc_embs = rank_model.encode(doc_texts, convert_to_tensor=True)
         scores = util.cos_sim(query_emb, doc_embs)[0]
         ranked = sorted(zip(docs, scores.tolist()), key=lambda x: x[1], reverse=True)
     else:
@@ -94,7 +98,14 @@ def rag_recall(query, top_k=3):
 
 
 def build_prompt(docs, query):
-    context = "\n\n".join([doc for doc, _ in docs])
+    # Extract text content from docs (handle both dict and string)
+    context_parts = []
+    for doc, _ in docs:
+        if isinstance(doc, dict):
+            context_parts.append(doc["text"])
+        else:
+            context_parts.append(str(doc))
+    context = "\n\n".join(context_parts)
     prompt = f"""
 {PROMPT}
 
@@ -108,39 +119,16 @@ Answer:
 """
     return prompt
 
+def generate_answer(prompt):
+    try:
 
-def generate_answer(prompt, max_tokens=150):
-    inputs = chat_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(device)
-    output_ids = chat_model.generate(
-        **inputs,
-        max_new_tokens=max_tokens,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9
-    )
+        response = client.chat(
+            model="mistral",
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    input_len = inputs["input_ids"].shape[1]
-    generated_tokens = output_ids[0][input_len:]
-    response = chat_tokenizer.decode(generated_tokens, skip_special_tokens=True)
-    return response
+        return response["message"]["content"]
 
-
-# =========================
-# MAIN LOOP
-# =========================
-if __name__ == "__main__":
-    while True:
-        query = input("Ask to know recent news: ").strip()
-        if not query:
-            continue
-        update_knowledge()  
-        top_docs = rag_recall(query)
-        if not is_confident(top_docs):
-            print("\nAnswer:\n I can't provide an answer for this question.")
-            continue
-        answer = generate_answer(build_prompt(top_docs, query))
-
-        print("\nAnswer:\n", answer)
-        print("\nSources:")
-        for i, (doc, score) in enumerate(top_docs):
-            print(f"{i+1}. (score={round(score,3)}) {doc}")
+    except Exception as e:
+        print("ERROR:", str(e))   # 👈 THIS WILL SHOW REAL PROBLEM
+        return "Internal error occurred"

@@ -7,7 +7,7 @@ function App(){
             <header>
                 <div className='flex flex-col h-full w-full gap-1 pt-4 pb-2'>
                     
-                    <img src={logo} className='w-32' alt='logo'/>
+                    <img src={logo} className='w-32' alt='logo' draggable="false"/>
                     
                     <h1 className='font-urbanist text-[1.65rem] font-semibold'>Finance News Chatbot</h1>
                 </div>

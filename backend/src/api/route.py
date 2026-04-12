@@ -1,18 +1,15 @@
 from uuid import uuid4
 from time import time
 from fastapi import APIRouter,Depends, HTTPException, Query
-from pydantic import BaseModel
 from src.data.chat_db import get_redis, create_chat, chat_exists,add_chat_messages,get_chat_messages
-from src.agent.chat import rag_recall,generate_answer,build_prompt
+from src.agent.chat import rag_recall,generate_answer
 from src.config.prompt import PROMPT
 from sse_starlette.sse import EventSourceResponse
 import asyncio
 import json
+from src.data.knowledge_process import KnowledgeProcessing
 
 router = APIRouter()
-
-class ChatIn(BaseModel):
-    message: str
 
 async def get_rdb():
     rdb = get_redis()
@@ -41,12 +38,17 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     await add_chat_messages(rdb, chat_id, [user_msg])
 
     history = await get_chat_messages(rdb, chat_id, last_n=5)
-
+    kp = KnowledgeProcessing(message)
+    kp.update_knowledge()
     top_docs = rag_recall(message)
-
-    # ✅ FIXED
-    context = "\n\n".join([doc for doc, _ in top_docs])
-
+    
+    context_parts = []
+    for doc, _ in top_docs:
+        if isinstance(doc, dict):
+            context_parts.append(doc["text"])
+        else:
+            context_parts.append(str(doc))
+    context = "\n\n".join(context_parts)
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
 
     final_prompt = f"""
@@ -66,8 +68,9 @@ Answer:
 
     async def event_generator():
         try:
-            full_response = generate_answer(final_prompt, max_tokens=100)
+            full_response = generate_answer(final_prompt)
 
+            # Stream chunks
             for i in range(0, len(full_response), 50):
                 chunk = full_response[i:i+50]
 
@@ -79,7 +82,6 @@ Answer:
 
                 await asyncio.sleep(0.05)
 
-            # ✅ Safe Redis save
             try:
                 await add_chat_messages(rdb, chat_id, [
                     {"role": "assistant", "content": full_response}
@@ -87,8 +89,18 @@ Answer:
             except Exception as e:
                 print("⚠️ Redis error:", e)
 
-            # ✅ End signal (important for frontend)
-            yield json.dumps({"event": "end"})
+            sources = [
+                {
+                    "url": doc.get("url", "N/A") if isinstance(doc, dict) else "N/A",
+                    "score": round(score, 3)
+                }
+                for doc, score in top_docs
+            ]
+
+            yield {
+                "event": "end",
+                "data": json.dumps({"sources": sources})
+            }
 
         except Exception as e:
             print("❌ STREAM ERROR:", e)

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useImmer } from 'use-immer';
 import api from '../api';
-import {parseSSEStream} from '../utils';
 import ChatMessages from './ChatMessage';
 import ChatInput from './ChatInput';
 
@@ -21,7 +20,7 @@ function Chatbot() {
             { role: 'assistant', content: '', loading: true }
         ]);
         setNewMessage('');
-
+        await new Promise(requestAnimationFrame);
         let chatIdOrNew = chatId;
 
         try {
@@ -36,7 +35,6 @@ function Chatbot() {
                 chatIdOrNew,
                 trimmedMessage,
                 (data) => {
-                    // Append chunk to last message
                     setMessages(draft => {
                         draft[draft.length - 1].content += data.content;
                     });
@@ -47,9 +45,12 @@ function Chatbot() {
                         draft[draft.length - 1].error = true;
                     });
                 },
-                () => {
+                (sources) => {
                     setMessages(draft => {
                         draft[draft.length - 1].loading = false;
+
+                        // ✅ attach sources to message
+                        draft[draft.length - 1].sources = sources;
                     });
                 }
             );
