@@ -45,7 +45,7 @@ Return only the queries, one per line.
 
     return list(set(queries))[:num]
 
-def is_confident(top_docs, threshold=0.4):
+def is_confident(top_docs, threshold=0.5):
     return top_docs and top_docs[0][1] >= threshold
 
 def rag_recall(query, top_k=3):

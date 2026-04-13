@@ -28,8 +28,7 @@ function ChatMessages({messages, isLoading}){
                                     <div className='whitespace-pre-line'>{content}</div>
                                 )}
                             </div>
-                            {role === 'assistant' && sources && sources.length > 0 && (
-                                <div className="mt-3 space-y-1 text-sm">
+                                {role === 'assistant' && Array.isArray(sources) && sources.length > 0 && (                                <div className="mt-3 space-y-1 text-sm">
                                     <p className="font-semibold text-gray-500">Sources:</p>
                                     {sources.map((s, i) => (
                                         <a

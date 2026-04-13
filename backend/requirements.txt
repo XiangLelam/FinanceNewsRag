@@ -5,6 +5,7 @@ sse-starlette
 sentence-transformers
 transformers
 torch
+lxml_html_clean
 faiss-cpu
 pymongo
 trafilatura

@@ -2,7 +2,7 @@ from uuid import uuid4
 from time import time
 from fastapi import APIRouter,Depends, HTTPException, Query
 from src.data.chat_db import get_redis, create_chat, chat_exists,add_chat_messages,get_chat_messages
-from src.agent.chat import rag_recall,generate_answer
+from src.agent.chat import rag_recall,generate_answer, is_confident
 from src.config.prompt import PROMPT
 from sse_starlette.sse import EventSourceResponse
 import asyncio
@@ -41,30 +41,50 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     kp = KnowledgeProcessing(message)
     kp.update_knowledge()
     top_docs = rag_recall(message)
-    
-    context_parts = []
-    for doc, _ in top_docs:
-        if isinstance(doc, dict):
-            context_parts.append(doc["text"])
-        else:
-            context_parts.append(str(doc))
-    context = "\n\n".join(context_parts)
+
+    use_context = is_confident(top_docs)
+
+    if use_context:
+        context_parts = []
+        for doc, _ in top_docs:
+            if isinstance(doc, dict):
+                context_parts.append(doc["text"])
+            else:
+                context_parts.append(str(doc))
+
+        context = "\n\n".join(context_parts)
+    else:
+        print("⚠️ Low confidence → fallback to LLM (no context)")
+        context = ""
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
 
-    final_prompt = f"""
-{PROMPT}
+    if context:
+        final_prompt = f"""
+            {PROMPT}
 
-Chat History:
-{history_text}
+            Chat History:
+            {history_text}
 
-Context:
-{context}
+            Context:
+            {context}
 
-User Question:
-{message}
+            User Question:
+            {message}
 
-Answer:
-"""
+            Answer:
+        """
+    else:
+        final_prompt = f"""
+            {PROMPT}
+
+            Chat History:
+            {history_text}
+
+            User Question:
+            {message}
+
+            Answer:
+        """
 
     async def event_generator():
         try:
@@ -89,17 +109,27 @@ Answer:
             except Exception as e:
                 print("⚠️ Redis error:", e)
 
-            sources = [
-                {
-                    "url": doc.get("url", "N/A") if isinstance(doc, dict) else "N/A",
-                    "score": round(score, 3)
-                }
-                for doc, score in top_docs
-            ]
+            low_confidence = not use_context
+
+            if use_context:
+                sources = [
+                    {
+                        "url": doc.get("url", "N/A"),
+                        "score": round(score, 3)
+                    }
+                    for doc, score in top_docs
+                ]
+            else:
+                sources = []
+
+            low_confidence = not use_context
 
             yield {
                 "event": "end",
-                "data": json.dumps({"sources": sources})
+                "data": json.dumps({
+                    "sources": sources,
+                    "low_confidence": low_confidence
+                })
             }
 
         except Exception as e:
