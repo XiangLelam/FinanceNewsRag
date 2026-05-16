@@ -9,7 +9,6 @@ class SSEStream:
     """
 
     def __init__(self):
-        # Internal queue holds outgoing SSE payloads.
         self._queue = asyncio.Queue()
         self._stream_end = object()
 

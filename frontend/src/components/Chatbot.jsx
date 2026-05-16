@@ -13,7 +13,6 @@ function Chatbot() {
         const trimmedMessage = newMessage.trim();
         if (!trimmedMessage || isLoading) return;
 
-        // Add user and empty assistant message
         setMessages(draft => [
             ...draft,
             { role: 'user', content: trimmedMessage },
@@ -30,7 +29,6 @@ function Chatbot() {
                 chatIdOrNew = id;
             }
 
-            // Start SSE streaming
             const sse = api.startChatStream(
                 chatIdOrNew,
                 trimmedMessage,
@@ -48,8 +46,6 @@ function Chatbot() {
                 (sources) => {
                     setMessages(draft => {
                         draft[draft.length - 1].loading = false;
-
-                        // ✅ attach sources to message
                         draft[draft.length - 1].sources = sources;
                     });
                 }

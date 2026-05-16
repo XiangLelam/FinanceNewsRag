@@ -8,13 +8,11 @@ function startChatStream(chatId, message, onMessage, onError, onComplete) {
         console.log('SSE connection opened');
     };
 
-    // 🔹 Handles streaming text chunks
     evtSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         onMessage(data);
     };
 
-    // ✅ ADD IT HERE
     evtSource.addEventListener("end", (event) => {
         const data = JSON.parse(event.data);
 
@@ -40,7 +38,6 @@ function startChatStream(chatId, message, onMessage, onError, onComplete) {
     return evtSource;
 }
 
-// createChat stays the same
 async function createChat() {
     const res = await fetch(`${BASE_URL}/chats`, {
         method: 'POST',

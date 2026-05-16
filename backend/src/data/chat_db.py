@@ -1,12 +1,20 @@
+import os
+from dotenv import load_dotenv
 import json
 from redis.asyncio import Redis
 from redis.commands.search.field import NumericField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 from redis.commands.json.path import Path
-from src.config.redis_settings import REDIS_HOST, REDIS_PORT
-CHAT_IDX_PREFIX = 'chat:'
-CHAT_IDX_NAME = 'idx:chat'
+import src.config.constant as cons
+
+load_dotenv()
+
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis-json')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+
+CHAT_IDX_PREFIX = cons.CHAT_IDX_PREFIX
+CHAT_IDX_NAME = cons.CHAT_IDX_NAME
 
 def get_redis():
     return Redis(host=REDIS_HOST,port=REDIS_PORT)

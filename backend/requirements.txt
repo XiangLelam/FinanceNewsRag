@@ -13,3 +13,4 @@ langdetect
 langchain
 langchain-text-splitters
 ollama
+dotenv

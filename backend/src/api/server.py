@@ -14,4 +14,6 @@ app.add_middleware(
 
 app.include_router(router)
 
+# For Docker deployment: serves built frontend from backend
+# For local development: comment this line out and use separate frontend server on port 3000
 app.mount("/", StaticFiles(directory="frontend_build", html=True), name="frontend")

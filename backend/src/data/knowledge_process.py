@@ -1,6 +1,7 @@
 from src.data.ingestor import Ingestor
 from src.data.vectordb import VectorDB
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import src.config.constant as cons
 
 class KnowledgeProcessing:
     def __init__(self, query):
@@ -8,33 +9,67 @@ class KnowledgeProcessing:
 
     def chunk_text(self, text):
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=100
+            chunk_size=cons.CHUNK_SIZE,
+            chunk_overlap=cons.CHUNK_OVERLAP
         )
         return splitter.split_text(text)
 
     def update_knowledge(self):
-        print("🔄 Fetching latest news...")
-        ingestor = Ingestor(self.query)
-        articles = ingestor.fetch_context_for_query()
+        """Fetch latest articles and rebuild vector DB. Returns True if successful."""
+        print("Fetching latest news...")
+        try:
+            ingestor = Ingestor(self.query)
+            articles = ingestor.fetch_context_for_query()
 
-        all_chunks = []
+            if not articles:
+                print("No articles fetched - attempting to reuse existing KB if available...")
+                # Check if we have an existing KB on disk
+                vectordb = VectorDB()
+                if vectordb.load() and vectordb.is_initialized():
+                    print("Reusing existing KB from disk (GDELT failed but old KB available)")
+                    return True
+                else:
+                    print("No KB available and GDELT failed - cannot proceed")
+                    return False
+            
+            print(f"Fetched {len(articles)} articles, chunking...")
 
-        for article in articles:
-            chunks = self.chunk_text(article["content"])
+            all_chunks = []
 
-            for chunk in chunks:
-                all_chunks.append({
-                    "text": chunk,
-                    "url": article["url"]
-                })
+            for i, article in enumerate(articles, 1):
+                chunks = self.chunk_text(article["content"])
+                print(f"Article {i}: {len(chunks)} chunks from '{article.get('title', 'N/A')[:50]}...'")
 
-        if not all_chunks:
-            print("⚠️ No data fetched")
-            return
+                for chunk in chunks:
+                    all_chunks.append({
+                        "text": chunk,
+                        "url": article["url"],
+                        "date": article.get("date"),
+                        "title": article.get("title")
+                    })
 
-        vectordb = VectorDB()
-        vectordb.build(all_chunks)
-        vectordb.save()
+            if not all_chunks:
+                print("No chunks created from articles")
+                return False
 
-        print("✅ Knowledge base updated")
+            print(f"Total chunks: {len(all_chunks)}")
+            
+            vectordb = VectorDB()
+            vectordb.build(all_chunks)
+            vectordb.save()
+
+            print(f"Knowledge base updated: {len(all_chunks)} chunks from {len(articles)} articles")
+            return True
+        
+        except Exception as e:
+            print(f"Error updating knowledge base: {e}")
+            try:
+                vectordb = VectorDB()
+                if vectordb.load() and vectordb.is_initialized():
+                    print("Using existing KB as fallback")
+                    return True
+            except:
+                pass
+            import traceback
+            traceback.print_exc()
+            return False

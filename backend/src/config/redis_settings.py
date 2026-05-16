@@ -1,2 +1,0 @@
-REDIS_HOST = 'redis-json'
-REDIS_PORT = 6379
