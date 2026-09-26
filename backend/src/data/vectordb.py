@@ -2,10 +2,22 @@ import faiss
 import pickle
 from sentence_transformers import SentenceTransformer
 import os
+import src.config.constant as cons
+
+_embedding_model = None
+
+
+def get_embedding_model():
+    """Load the embedding model once and share it (VectorDB is created per request)."""
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = SentenceTransformer(cons.EMBEDDING_MODEL)
+    return _embedding_model
+
 
 class VectorDB:
     def __init__(self):
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.model = get_embedding_model()
         self.index = None
         self.texts = []
 
@@ -15,7 +27,7 @@ class VectorDB:
 
     def build(self, docs):
         # Extract texts
-        texts = [doc["text"] for doc in docs]
+        texts = [f"{doc.get('title') or ''}\n{doc['text']}" for doc in docs]
 
         # 1. Generate embeddings
         embeddings = self.model.encode(
@@ -37,10 +49,11 @@ class VectorDB:
         if not self.is_initialized():
             print("Cannot save empty vector DB")
             return
-        
+
         faiss.write_index(self.index, "faiss.index")
         with open("texts.pkl", "wb") as f:
-            pickle.dump(self.texts, f)
+            # Store the model name so an index built by a different model is not reused
+            pickle.dump({"model": cons.EMBEDDING_MODEL, "docs": self.texts}, f)
         print(f"Vector DB saved ({len(self.texts)} docs)")
 
     def load(self):
@@ -50,9 +63,17 @@ class VectorDB:
             self.texts = []
             return False
 
-        self.index = faiss.read_index("faiss.index")
         with open("texts.pkl", "rb") as f:
-            self.texts = pickle.load(f)
+            data = pickle.load(f)
+
+        if not isinstance(data, dict) or data.get("model") != cons.EMBEDDING_MODEL:
+            print("Vector DB on disk was built with a different embedding model - ignoring it")
+            self.index = None
+            self.texts = []
+            return False
+
+        self.index = faiss.read_index("faiss.index")
+        self.texts = data["docs"]
 
         print(f"Vector DB loaded ({len(self.texts)} docs)")
         return True
@@ -62,7 +83,7 @@ class VectorDB:
         if self.index is None:
             print("Vector DB index not initialized. Returning empty results.")
             return []
-        
+
         q_vec = self.model.encode(
             [query],
             convert_to_numpy=True,
@@ -73,11 +94,9 @@ class VectorDB:
 
         results = []
         for idx, score in zip(I[0], D[0]):
+            # FAISS returns -1 when the index has fewer than k docs
+            if idx < 0:
+                continue
             results.append((self.texts[idx], float(score)))
 
         return results
-
-            
-
-            
-

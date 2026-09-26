@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 import ollama
 from src.config.prompt import (
@@ -28,8 +29,15 @@ def typo_corrector_agent(query):
             stream=False
         )
         
-        corrected = response["message"]["content"].strip().strip('"').strip()
-        
+        # First line only - the model sometimes adds an explanation below
+        corrected = response["message"]["content"].strip().split('\n')[0].strip().strip('"').strip()
+        # Drop notes the model appends, e.g. "... (No correction needed)"
+        corrected = re.sub(r'\s*\([^)]*\)\s*$', '', corrected).strip()
+
+        # A typo fix barely changes the length - anything much longer is the model rewording/explaining
+        if not corrected or len(corrected) > len(query) + 10:
+            return query
+
         if corrected != query:
             print(f"Typo correction: '{query}' → '{corrected}'")
         
@@ -53,7 +61,7 @@ def extract_keywords_agent_llm(query):
             messages=[{"role": "user", "content": prompt}]
         )
         
-        keywords = response["message"]["content"].strip()
+        keywords = response["message"]["content"].strip().split('\n')[0].replace('"', '').strip()
         print(f"LLM extracted keywords: {keywords}")
         return keywords
     
@@ -62,10 +70,13 @@ def extract_keywords_agent_llm(query):
         return query
 
 
-def rewrite_query_agent(query):
-    """Normalize and improve query for better retrieval using LLM."""
+def rewrite_query_agent(query, history_text=""):
+    """Rewrite the query into a standalone search query, resolving follow-ups from chat history."""
     try:
-        prompt = REWRITE_QUERY_PROMPT.format(query=query)
+        prompt = REWRITE_QUERY_PROMPT.format(
+            query=query,
+            history=history_text or "(no previous messages)"
+        )
 
         response = client.chat(
             model=OLLAMA_MODEL,
@@ -74,7 +85,7 @@ def rewrite_query_agent(query):
 
         rewritten = response["message"]["content"].strip().strip('"').strip()
         rewritten = rewritten.split('\n')[0].strip()
-        return rewritten
+        return rewritten or query
     except Exception as e:
         print(f"Query rewrite failed, using original: {e}")
         return query
@@ -93,7 +104,9 @@ def get_similar_queries_agent(query, num=3):
         text = response["message"]["content"]
 
         queries = text.split("\n")
-        queries = [q.strip("-").strip() for q in queries if q.strip()]
+        # Strip bullets/numbering like "- ", "* ", "1. ", "2) " and surrounding quotes
+        queries = [re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', q).strip().strip('"').strip() for q in queries]
+        queries = [q for q in queries if q]
 
         return list(set(queries))[:num]
     except Exception as e:
@@ -122,7 +135,7 @@ def classify_document_relevance_agent(doc, user_query):
         
         result = response["message"]["content"].strip().lower()
         
-        if "yes" in result:
+        if result.strip('"\'.! ').startswith("yes"):
             return "relevant"
         else:
             return "not_relevant"

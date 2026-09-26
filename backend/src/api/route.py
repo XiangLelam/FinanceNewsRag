@@ -4,14 +4,39 @@ from fastapi import APIRouter,Depends, HTTPException, Query
 from src.data.chat_db import get_redis, create_chat, chat_exists,add_chat_messages,get_chat_messages
 from src.agent.rag import rag_recall, is_confident, extract_keywords, should_update_kb, mark_kb_updated
 from src.agent.agents import typo_corrector_agent, rewrite_query_agent, generate_answer_agent
-from src.config.prompt import PROMPT, LOW_CONFIDENCE_PROMPT
+from src.config.prompt import (
+    PROMPT,
+    LOW_CONFIDENCE_PROMPT,
+    FETCH_FAILED_MESSAGE,
+    NO_MATCH_REASON,
+    LOW_RELEVANCE_REASON
+)
 from sse_starlette.sse import EventSourceResponse
+from datetime import datetime
+from urllib.parse import urlparse
 import asyncio
 import json
 from src.data.knowledge_process import KnowledgeProcessing
 import src.config.constant as cons
 
 router = APIRouter()
+
+
+def format_context(top_docs):
+    """Number each article and label it with title, source and date so the LLM can cite and date it."""
+    parts = []
+    for i, (doc, _) in enumerate(top_docs, 1):
+        if not isinstance(doc, dict):
+            parts.append(f"[{i}]\n{doc}")
+            continue
+
+        source = urlparse(doc.get("url") or "").netloc.replace("www.", "") or "unknown source"
+        date = doc.get("date")
+        date_str = date.strftime("%Y-%m-%d") if isinstance(date, datetime) else (date or "unknown date")
+
+        parts.append(f"[{i}] {doc.get('title') or 'Untitled'} ({source}, published {date_str})\n{doc['text']}")
+
+    return "\n\n".join(parts)
 
 async def get_rdb():
     rdb = get_redis()
@@ -36,11 +61,14 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     if not await chat_exists(rdb, chat_id):
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    # Load history BEFORE saving the new message, so the question isn't duplicated in the prompt
+    history = await get_chat_messages(rdb, chat_id, last_n=cons.CHAT_HISTORY_SIZE)
+    history = [m for m in history if m.get("content") != FETCH_FAILED_MESSAGE]
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+
     user_msg = {"role": "user", "content": message}
     await add_chat_messages(rdb, chat_id, [user_msg])
 
-    history = await get_chat_messages(rdb, chat_id, last_n=cons.CHAT_HISTORY_SIZE)
-    
     print(f"\n{'='*60}")
     print(f"User Query: '{message}'")
     
@@ -51,12 +79,12 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     else:
         print(f"No typos detected in query")
     
-    # 2. Rewrite query for better semantic understanding
-    normalised_query = rewrite_query_agent(corrected_query)
+    # 2. Rewrite into a standalone search query (resolves follow-ups like "what about its stock?")
+    normalised_query = rewrite_query_agent(corrected_query, history_text)
     print(f"Normalized: '{normalised_query}'")
-    
-    # 3. Extract keywords for GDELT search (typo correction + stopword removal)
-    gdelt_keywords = extract_keywords(corrected_query)
+
+    # 3. Extract keywords for GDELT search from the standalone query (stopword removal)
+    gdelt_keywords = extract_keywords(normalised_query, correct_typos=False)
     print(f"Keywords: '{gdelt_keywords}'")
     
     # 4. Check if KB needs updating (KB persistence: reuse KB if same keywords)
@@ -78,75 +106,58 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
         kb_updated = False
         print(f"Reusing existing KB (keywords unchanged)")
     
-    # 5. Retrieve relevant documents (returns empty list if KB not initialized)
+    fetch_failed = kb_needs_update and not kb_updated
+
     print(f"\nPerforming RAG retrieval...")
-    try:
-        top_docs = rag_recall(
-            query=corrected_query,
-            normalized_query=normalised_query,
-            skip_kb_update=True 
-        )
-        print(f"Retrieved {len(top_docs)} documents")
-        if len(top_docs) > 0:
-            print(f"Top scores: {[f'{score:.4f}' for _, score in top_docs]}")
-    except Exception as e:
-        print(f"RAG recall error: {e}")
-        import traceback
-        traceback.print_exc()
+    if fetch_failed:
+        print("News fetch failed - skipping retrieval")
         top_docs = []
+    else:
+        try:
+            top_docs = rag_recall(
+                query=corrected_query,
+                normalized_query=normalised_query,
+                keywords=gdelt_keywords,
+                skip_kb_update=True
+            )
+            print(f"Retrieved {len(top_docs)} documents")
+            if len(top_docs) > 0:
+                print(f"Top scores: {[f'{score:.4f}' for _, score in top_docs]}")
+        except Exception as e:
+            print(f"RAG recall error: {e}")
+            import traceback
+            traceback.print_exc()
+            top_docs = []
     
     use_context = is_confident(top_docs)
 
-    if use_context:
-        context_parts = []
-        for doc, _ in top_docs:
-            if isinstance(doc, dict):
-                context_parts.append(doc["text"])
-            else:
-                context_parts.append(str(doc))
+    today = datetime.now().strftime("%A, %d %B %Y")
+    history_for_prompt = history_text or "(no previous messages)"
 
-        context = "\n\n".join(context_parts)
+    if use_context:
+        final_prompt = PROMPT.format(
+            today=today,
+            history=history_for_prompt,
+            context=format_context(top_docs),
+            question=corrected_query
+        )
         print(f"Using {len(top_docs)} sources with high confidence")
     else:
-        if not kb_updated:
-            print("Knowledge base not updated - using LLM without context")
-        else:
-            print("Low confidence scores - using LLM without context (may provide general answer)")
-        context = ""
-    
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
-
-    if context:
-        final_prompt = f"""
-            {PROMPT}
-
-            Chat History:
-            {history_text}
-
-            Context from News Sources:
-            {context}
-
-            User Question:
-            {corrected_query}
-
-            Answer:
-        """
-    else:
-        final_prompt = f"""
-            {LOW_CONFIDENCE_PROMPT}
-
-            Chat History:
-            {history_text}
-
-            User Question:
-            {corrected_query}
-
-            Answer:
-        """
+        reason = LOW_RELEVANCE_REASON if top_docs else NO_MATCH_REASON
+        print(f"No confident context ({reason}) - using LLM without context")
+        final_prompt = LOW_CONFIDENCE_PROMPT.format(
+            today=today,
+            reason=reason,
+            history=history_for_prompt,
+            question=corrected_query
+        )
 
     async def event_generator():
         try:
-            full_response = generate_answer_agent(final_prompt)
+            if fetch_failed:
+                full_response = FETCH_FAILED_MESSAGE
+            else:
+                full_response = generate_answer_agent(final_prompt)
 
             for i in range(0, len(full_response), cons.STREAMING_CHUNK_SIZE):
                 chunk = full_response[i:i+cons.STREAMING_CHUNK_SIZE]

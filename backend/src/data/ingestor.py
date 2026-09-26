@@ -1,9 +1,21 @@
+import os
 import requests
 import trafilatura
 import time
+from dotenv import load_dotenv
 from langdetect import detect
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import src.config.constant as cons
+
+load_dotenv()
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
+
+_last_gdelt_request = 0.0
+_gdelt_blocked_until = 0.0
+
+# Finance words that GNews should treat as alternatives, not all required
+# (e.g. "apple stock price" -> apple AND (stock OR shares)). "price" alone matches shopping deals.
+FINANCE_TERMS = {"stock", "stocks", "share", "shares", "price", "prices", "valuation", "market"}
 
 class Ingestor:
     def __init__(self, query):
@@ -12,10 +24,17 @@ class Ingestor:
         self.url = cons.GDELT_URL
 
     def url_request(self, params, retries=3):
+        global _last_gdelt_request
         headers = cons.HEADERS
 
         for attempt in range(retries):
+            # GDELT allows one request every 5 seconds
+            wait = cons.GDELT_MIN_INTERVAL - (time.time() - _last_gdelt_request)
+            if wait > 0:
+                time.sleep(wait)
+
             try:
+                _last_gdelt_request = time.time()
                 res = requests.get(
                     self.url,
                     params=params,
@@ -23,23 +42,37 @@ class Ingestor:
                     timeout=cons.REQUEST_TIMEOUT
                 )
 
-                if res.status_code == 200 and res.text.strip():
+                if res.status_code == 200 and res.text.strip().startswith("{"):
                     return res
+
+                print(f"Attempt {attempt+1} failed: HTTP {res.status_code} {res.text[:80]}")
 
             except requests.exceptions.RequestException as e:
                 print(f"Attempt {attempt+1} failed:", e)
-                time.sleep(2)
 
-        print("GDELT request failed after retries")
+            # Back off harder after each failure (e.g. 6s, 12s, 24s)
+            _last_gdelt_request = time.time() + cons.GDELT_MIN_INTERVAL * (2 ** attempt - 1)
+
+        # Skip GDELT for a while instead of waiting on it for every question
+        global _gdelt_blocked_until
+        _gdelt_blocked_until = time.time() + cons.GDELT_COOLDOWN
+        print(f"GDELT request failed after retries - skipping GDELT for {cons.GDELT_COOLDOWN}s")
         return None
 
     def get_gdelt_urls(self):
+        remaining = _gdelt_blocked_until - time.time()
+        if remaining > 0:
+            print(f"GDELT unavailable (cooling down for {remaining:.0f}s more) - skipping")
+            return []
+
         print(f"GDELT Query: '{self.query}'")
         params = {
             "query": f"{self.query} sourceLang:eng",
             "mode": "artlist",
             "maxrecords": self.max_results,
-            "format": "json"
+            "format": "json",
+            "sort": cons.GDELT_SORT,
+            "timespan": cons.GDELT_TIMESPAN
         }
 
         print(f"GDELT URL: {self.url}")
@@ -75,17 +108,91 @@ class Ingestor:
         
         return articles
 
+    def build_gnews_query(self, keywords):
+        """Require the topic words, but accept any finance term: "apple stock price" -> apple AND (stock OR shares)."""
+        words = [w.strip('"\'()') for w in keywords.lower().split()]
+        words = [w for w in words if w and w not in ("and", "or", "not")]
+        topic = [f'"{w}"' for w in words if w not in FINANCE_TERMS]
+        has_finance = any(w in FINANCE_TERMS for w in words)
+
+        if not topic:
+            return "stock OR shares" if has_finance else keywords
+        query = " AND ".join(topic)
+        if has_finance:
+            query += " AND (stock OR shares)"
+        return query
+
+    def get_gnews_urls(self):
+        """Fallback news source when GDELT is unavailable (e.g. rate limited)."""
+        if not GNEWS_API_KEY:
+            print("GNEWS_API_KEY not set - skipping GNews fallback")
+            return []
+
+        gnews_query = self.build_gnews_query(self.query)
+        print(f"GNews Query: '{gnews_query}'")
+        since = datetime.now(timezone.utc) - timedelta(days=cons.GNEWS_DAYS)
+        params = {
+            "q": gnews_query,
+            "in": "title,description",
+            "lang": "en",
+            "max": cons.GNEWS_MAX_RESULTS,
+            "sortby": "relevance",
+            "from": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "apikey": GNEWS_API_KEY
+        }
+
+        try:
+            res = requests.get(cons.GNEWS_URL, params=params, timeout=cons.REQUEST_TIMEOUT)
+            if res.status_code != 200:
+                print(f"GNews request failed: HTTP {res.status_code} {res.text[:100]}")
+                return []
+            data = res.json()
+        except Exception as e:
+            print(f"GNews request failed: {str(e)[:100]}")
+            return []
+
+        articles = [
+            {
+                "title": a.get("title"),
+                "url": a.get("url"),
+                "source": (a.get("source") or {}).get("name"),
+                "lang": "English",
+                "date": a.get("publishedAt")
+            }
+            for a in data.get("articles", [])
+            if a.get("url")
+        ]
+
+        print(f"GNews returned {len(articles)} articles")
+        for i, a in enumerate(articles[:3], 1):
+            print(f"{i}. {(a.get('title') or 'N/A')[:60]}...")
+
+        return articles
+
     def is_english(self, text):
         try:
             return detect(text) == "en"
         except:
             return False
 
-    def format_date(self,raw_date):
-        try:
-            return datetime.strptime(raw_date, "%Y%m%d%H%M%S")
-        except:
+    def format_date(self, raw_date):
+        if not raw_date:
             return None
+
+        # GDELT format, e.g. "20260924T134500Z"
+        try:
+            return datetime.strptime(raw_date, "%Y%m%dT%H%M%SZ")
+        except ValueError:
+            pass
+
+        # GNews format, e.g. "2026-09-24T13:45:00Z"
+        try:
+            return datetime.strptime(raw_date, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            pass
+
+        print(f"Unknown date format: {raw_date}")
+        return None
 
     def scrape_article(self, url, query=None):
         try:
@@ -104,12 +211,12 @@ class Ingestor:
                 text_lower = text.lower()
                 
                 # Extract keywords from query (remove common words and quotes)
-                keywords = [w.strip('\"').strip() for w in query_lower.split() if len(w.strip('\"').strip()) > cons.MIN_KEYWORD_LENGTH]
-                
+                keywords = [w.strip('\"').strip() for w in query_lower.split() if len(w.strip('\"').strip()) >= cons.MIN_KEYWORD_LENGTH]
+
                 # Check if at least one significant keyword appears in article
                 found_keywords = [kw for kw in keywords if kw in text_lower]
-                
-                if not found_keywords:
+
+                if keywords and not found_keywords:
                     print(f"Skipped (no keywords match): {keywords} not in article")
                     return None
                 
@@ -132,7 +239,11 @@ class Ingestor:
     def fetch_context_for_query(self):
         """Fetch articles for the query. Returns list of parsed articles with content."""
         articles = self.get_gdelt_urls()
-        
+
+        if not articles:
+            print(f"GDELT returned nothing for '{self.query}' - trying GNews...")
+            articles = self.get_gnews_urls()
+
         if not articles:
             print(f"No articles found for query: '{self.query}' - trying fallback...")
             self.query = cons.GDELT_FALLBACK_QUERY

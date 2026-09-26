@@ -22,15 +22,8 @@ class KnowledgeProcessing:
             articles = ingestor.fetch_context_for_query()
 
             if not articles:
-                print("No articles fetched - attempting to reuse existing KB if available...")
-                # Check if we have an existing KB on disk
-                vectordb = VectorDB()
-                if vectordb.load() and vectordb.is_initialized():
-                    print("Reusing existing KB from disk (GDELT failed but old KB available)")
-                    return True
-                else:
-                    print("No KB available and GDELT failed - cannot proceed")
-                    return False
+                print("No articles fetched - cannot update KB")
+                return False
             
             print(f"Fetched {len(articles)} articles, chunking...")
 
@@ -63,13 +56,6 @@ class KnowledgeProcessing:
         
         except Exception as e:
             print(f"Error updating knowledge base: {e}")
-            try:
-                vectordb = VectorDB()
-                if vectordb.load() and vectordb.is_initialized():
-                    print("Using existing KB as fallback")
-                    return True
-            except:
-                pass
             import traceback
             traceback.print_exc()
             return False
