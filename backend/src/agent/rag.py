@@ -1,6 +1,6 @@
-from sentence_transformers import SentenceTransformer, util
-from src.data.vectordb import VectorDB
-from src.config.prompt import PROMPT
+import torch
+from sentence_transformers import CrossEncoder, util
+from src.data.vectordb import VectorDB, get_embedding_model
 from src.agent.agents import (
     typo_corrector_agent,
     extract_keywords_agent_llm,
@@ -11,7 +11,8 @@ from datetime import datetime
 import src.config.constant as cons
 
 
-rank_model = SentenceTransformer("all-MiniLM-L6-v2")
+# Cross-encoder reads query and document together -> much sharper relevance scores
+rerank_model = CrossEncoder(cons.RERANK_MODEL)
 
 CURRENT_KB_KEYWORDS = None
 STOPWORDS = {
@@ -26,17 +27,17 @@ STOPWORDS = {
     'want', 'know', 'see', 'get', 'latest', 'new', 'today', 'today\'s', 'want', 'news', 'article'
 }
 
-def extract_keywords(query):
+def extract_keywords(query, correct_typos=True):
 
     try:
         print(f"Raw query: '{query}'")
-        corrected = typo_corrector_agent(query)
+        corrected = typo_corrector_agent(query) if correct_typos else query
         if corrected != query:
             print(f"Typo corrected: '{query}' → '{corrected}'")
         
         # 2. Extract words, remove stopwords and special characters
         words = corrected.lower().split()
-        words = [w.strip('"').strip("'").strip() for w in words]
+        words = [w.strip('"\'?!.,:;()').strip() for w in words]
         filtered_words = [w for w in words if w not in STOPWORDS and len(w) > 2 and w]
         
         print(f"Words after stopword removal: {filtered_words}")
@@ -114,7 +115,7 @@ def mark_kb_updated(keywords):
     print(f"KB marked as updated for keywords: '{keywords}'")
 
 
-def rag_recall(query, normalized_query=None, top_k=3, skip_kb_update=False):
+def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_update=False):
 
     vectordb = VectorDB()
     vectordb.load()
@@ -182,10 +183,12 @@ def rag_recall(query, normalized_query=None, top_k=3, skip_kb_update=False):
     docs = [doc for doc, _ in docs_with_scores]
     
     # Entity validation: filter out generic news that doesn't mention the query entity
-    print(f"\nEntity validation: checking if docs contain keywords from '{query}'")
+    # Use the standalone (rewritten) query so follow-ups like "what about its stock?" are judged correctly
+    validation_query = normalized_query or query
+    print(f"\nEntity validation: checking if docs are relevant to '{validation_query}'")
     validated_docs = []
     for doc, score in docs_with_scores:
-        if validate_entity_match(doc, query, min_keywords=1):
+        if validate_entity_match(doc, validation_query, min_keywords=1):
             validated_docs.append((doc, score))
     
     if not validated_docs:
@@ -195,22 +198,30 @@ def rag_recall(query, normalized_query=None, top_k=3, skip_kb_update=False):
     docs = [doc for doc, _ in validated_docs]
     print(f"Passed entity validation: {len(docs)}/{len(docs_with_scores)} docs")
     if docs:
-        # Use normalized query for better semantic matching
-        rank_query = normalized_query if normalized_query else query
-        query_emb = rank_model.encode(rank_query, convert_to_tensor=True)
+        # Score against the original query, normalized query and keywords, keep the best.
+        # Keywords matter for vague queries: "apple latest news" scores ~0.2 on a
+        # relevant article, while "apple" scores ~0.97
+        rank_queries = list({q for q in (query, normalized_query, keywords) if q})
 
+        # Include the title - it is usually the most query-relevant text
         doc_texts = [
-            doc["text"] if isinstance(doc, dict) else doc
+            f"{doc.get('title') or ''}\n{doc['text']}" if isinstance(doc, dict) else doc
             for doc in docs
         ]
 
-        doc_embs = rank_model.encode(doc_texts, convert_to_tensor=True)
+        pairs = [(q, text) for q in rank_queries for text in doc_texts]
+        # Sigmoid maps the model's raw logits to a 0-1 relevance score
+        pair_scores = rerank_model.predict(pairs, activation_fn=torch.nn.Sigmoid()).tolist()
 
-        scores = util.cos_sim(query_emb, doc_embs)[0].tolist()
+        n = len(doc_texts)
+        scores = [
+            max(pair_scores[qi * n + di] for qi in range(len(rank_queries)))
+            for di in range(n)
+        ]
 
         now = datetime.now()
         ranked = []
-        
+
         for doc, score in zip(docs, scores):
             # Apply temporal boost if date is available
             if isinstance(doc, dict) and doc.get("date"):
@@ -244,12 +255,14 @@ def rag_recall(query, normalized_query=None, top_k=3, skip_kb_update=False):
         #Semantic deduplication - remove highly similar docs
         filtered_ranked = []
         seen_docs = []
-        
-        for doc, score in ranked:
+        ranked_embs = get_embedding_model().encode(
+            [doc["text"] if isinstance(doc, dict) else str(doc) for doc, _ in ranked],
+            convert_to_tensor=True
+        )
+
+        for (doc, score), doc_emb in zip(ranked, ranked_embs):
             is_duplicate = False
-            doc_text = doc["text"] if isinstance(doc, dict) else str(doc)
-            doc_emb = rank_model.encode(doc_text, convert_to_tensor=True)
-            
+
             for seen_doc_emb in seen_docs:
                 similarity = util.cos_sim(doc_emb, seen_doc_emb)[0].item()
                 # If similarity exceeds threshold, treat as duplicate/near-duplicate
@@ -272,30 +285,13 @@ def rag_recall(query, normalized_query=None, top_k=3, skip_kb_update=False):
         
         ranked = list(url_dedup.values())
         print(f" After URL deduplication: {len(ranked)} unique sources")
+
+        # Keep only confident matches so weak docs aren't used as context or sources
+        confident_ranked = [(doc, score) for doc, score in ranked if score >= cons.CONFIDENCE_THRESHOLD]
+        print(f"Above confidence threshold: {len(confident_ranked)}/{len(ranked)} docs")
+        if confident_ranked:
+            ranked = confident_ranked
     else:
         ranked = []
 
     return ranked[:top_k]
-
-
-def build_prompt(docs, query):
-    # Extract text content from docs (handle both dict and string)
-    context_parts = []
-    for doc, _ in docs:
-        if isinstance(doc, dict):
-            context_parts.append(doc["text"])
-        else:
-            context_parts.append(str(doc))
-    context = "\n\n".join(context_parts)
-    prompt = f"""
-{PROMPT}
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer:
-"""
-    return prompt

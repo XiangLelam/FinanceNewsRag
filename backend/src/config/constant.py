@@ -6,8 +6,16 @@ GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 REQUEST_TIMEOUT = 10
 
 # GDELT Data Ingestion
-GDELT_MAX_RESULTS = 5
+GDELT_MAX_RESULTS = 20
 GDELT_FALLBACK_QUERY = "stock market news"
+GDELT_MIN_INTERVAL = 6
+GDELT_TIMESPAN = "7d"
+GDELT_SORT = "HybridRel"
+GDELT_COOLDOWN = 300  # seconds to skip GDELT after it fails (e.g. rate limited) and go straight to GNews
+
+GNEWS_URL = "https://gnews.io/api/v4/search"
+GNEWS_MAX_RESULTS = 10
+GNEWS_DAYS = 7
 MIN_KEYWORD_LENGTH = 3
 ARTICLE_SNIPPET_LENGTH = 1000
 
@@ -16,7 +24,9 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
 # RAG Scoring & Retrieval
-CONFIDENCE_THRESHOLD = 0.30
+EMBEDDING_MODEL = "multi-qa-MiniLM-L6-cos-v1"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+CONFIDENCE_THRESHOLD = 0.5
 SEMANTIC_SEARCH_K = 5
 SEMANTIC_DUPLICATE_THRESHOLD = 0.85
 MIN_DOCUMENT_TEXT_LENGTH = 150
