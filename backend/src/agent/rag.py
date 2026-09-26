@@ -11,20 +11,34 @@ from datetime import datetime
 import src.config.constant as cons
 
 
-# Cross-encoder reads query and document together -> much sharper relevance scores
 rerank_model = CrossEncoder(cons.RERANK_MODEL)
 
 CURRENT_KB_KEYWORDS = None
 STOPWORDS = {
-    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
-    'by', 'from', 'about', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
-    'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may',
-    'might', 'can', 'must', 'shall', 'as', 'if', 'than', 'that', 'this', 'which',
-    'who', 'what', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both',
-    'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-    'same', 'so', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her',
-    'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'would', 'like',
-    'want', 'know', 'see', 'get', 'latest', 'new', 'today', 'today\'s', 'want', 'news', 'article'
+    # Articles, conjunctions, prepositions
+    'the', 'a', 'an', 'and', 'or', 'but', 'nor', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+    'by', 'from', 'about', 'into', 'as', 'if', 'than', 'so',
+    # Auxiliary / modal verbs
+    'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'have', 'has', 'had',
+    'do', 'does', 'did', 'doing', 'will', 'would', 'could', 'should', 'may', 'might',
+    'can', 'must', 'shall',
+    # Question words and contractions
+    'what', 'when', 'where', 'why', 'how', 'who', 'which', 'that', 'this', 'there', 'here',
+    "what's", 'whats', "how's", "it's", "there's", "i'm", 'im', "let's", 'lets',
+    # Pronouns ("it" is almost always a pronoun in questions, e.g. "is it going up?")
+    'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'them',
+    'my', 'your', 'his', 'its', 'our', 'their',
+    # Quantifiers / filler
+    'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'any',
+    'no', 'not', 'only', 'same', 'just', 'also', 'very', 'much', 'please',
+    # Request verbs
+    'like', 'want', 'know', 'see', 'get', 'got', 'tell', 'show', 'give', 'find', 'check',
+    'look', 'looking', 'need', 'think', 'say', 'said', 'let', 'go', 'going', 'happen',
+    'happened', 'happening',
+    # News/time filler - the search is already limited to recent articles
+    'latest', 'recent', 'recently', 'current', 'currently', 'now', 'today', "today's",
+    'yesterday', 'week', 'weeks', 'news', 'article', 'articles', 'update', 'updates',
+    'info', 'information', 'details',
 }
 
 def extract_keywords(query, correct_typos=True):
@@ -35,10 +49,9 @@ def extract_keywords(query, correct_typos=True):
         if corrected != query:
             print(f"Typo corrected: '{query}' → '{corrected}'")
         
-        # 2. Extract words, remove stopwords and special characters
-        words = corrected.lower().split()
+        words = corrected.lower().replace("’", "'").split()
         words = [w.strip('"\'?!.,:;()').strip() for w in words]
-        filtered_words = [w for w in words if w not in STOPWORDS and len(w) > 2 and w]
+        filtered_words = [w for w in words if w not in STOPWORDS and len(w) >= 2]
         
         print(f"Words after stopword removal: {filtered_words}")
         
@@ -47,7 +60,6 @@ def extract_keywords(query, correct_typos=True):
             print(f"Extracted keywords: '{keywords}'")
             return keywords
         
-        # 3. If filtering removes everything, try LLM extraction
         print("Stopword filtering removed all words, using LLM extraction...")
         return extract_keywords_agent_llm(corrected)
     
@@ -77,11 +89,9 @@ def validate_entity_match(doc, query, min_keywords=1):
     
     doc_text = (doc.get("text", "") + " " + doc.get("title", "")).lower()
     
-    # For small documents, accept if they exist
     if len(doc_text) < cons.MIN_DOCUMENT_TEXT_LENGTH:
         return True
     
-    # Use LLM to classify based on FULL query context
     relevance = classify_document_relevance_agent(doc, query)
     
     if relevance == "relevant":
@@ -95,21 +105,17 @@ def should_update_kb(current_keywords):
 
     global CURRENT_KB_KEYWORDS
     
-    # If no KB keywords tracked yet, update
     if CURRENT_KB_KEYWORDS is None:
         return True
     
-    # If keywords are identical, skip update (KB is fresh)
     if CURRENT_KB_KEYWORDS == current_keywords:
         print("KB already contains latest articles for these keywords, skipping update")
         return False
     
-    # Different keywords = need to update
     return True
 
 
 def mark_kb_updated(keywords):
-    """Mark KB as updated with these keywords."""
     global CURRENT_KB_KEYWORDS
     CURRENT_KB_KEYWORDS = keywords
     print(f"KB marked as updated for keywords: '{keywords}'")
@@ -126,10 +132,7 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
         print(f"Texts loaded: {len(vectordb.texts) if vectordb.texts else 0}")
         return []
 
-    # Check if we should skip KB update based on keywords
     if not skip_kb_update:
-
-        # Extract keywords to check KB persistence
         temp_keywords = extract_keywords(query)
         if not should_update_kb(temp_keywords):
             skip_kb_update = True 
@@ -141,13 +144,11 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
     if normalized_query and normalized_query != query:
         queries.append(normalized_query)
 
-    # Add LLM-generated variations (based on normalized query if available)
     base_query = normalized_query if normalized_query else query
     variations = get_similar_queries_agent(base_query)
 
     queries.extend(variations)
 
-    # Remove duplicates
     queries = list(set(queries))
 
     print(f"\nRAG Retrieval Pipeline:")
@@ -155,7 +156,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
     print(f"Normalized query: '{normalized_query}'")
     print(f"Query variations: {queries}")
 
-    # Retrieve from FAISS
     all_results = []
 
     for q in queries:
@@ -175,15 +175,12 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
     for doc, score in all_results:
         text_key = doc["text"] if isinstance(doc, dict) else str(doc)
 
-        # Keep highest score if exact duplicate
         if text_key not in unique_docs or unique_docs[text_key][1] < score:
             unique_docs[text_key] = (doc, score)
 
     docs_with_scores = list(unique_docs.values())
     docs = [doc for doc, _ in docs_with_scores]
     
-    # Entity validation: filter out generic news that doesn't mention the query entity
-    # Use the standalone (rewritten) query so follow-ups like "what about its stock?" are judged correctly
     validation_query = normalized_query or query
     print(f"\nEntity validation: checking if docs are relevant to '{validation_query}'")
     validated_docs = []
@@ -198,19 +195,13 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
     docs = [doc for doc, _ in validated_docs]
     print(f"Passed entity validation: {len(docs)}/{len(docs_with_scores)} docs")
     if docs:
-        # Score against the original query, normalized query and keywords, keep the best.
-        # Keywords matter for vague queries: "apple latest news" scores ~0.2 on a
-        # relevant article, while "apple" scores ~0.97
         rank_queries = list({q for q in (query, normalized_query, keywords) if q})
-
-        # Include the title - it is usually the most query-relevant text
         doc_texts = [
             f"{doc.get('title') or ''}\n{doc['text']}" if isinstance(doc, dict) else doc
             for doc in docs
         ]
 
         pairs = [(q, text) for q in rank_queries for text in doc_texts]
-        # Sigmoid maps the model's raw logits to a 0-1 relevance score
         pair_scores = rerank_model.predict(pairs, activation_fn=torch.nn.Sigmoid()).tolist()
 
         n = len(doc_texts)
@@ -223,7 +214,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
         ranked = []
 
         for doc, score in zip(docs, scores):
-            # Apply temporal boost if date is available
             if isinstance(doc, dict) and doc.get("date"):
                 try:
                     doc_date = doc["date"]
@@ -247,12 +237,10 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
             
             ranked.append((doc, final_score))
 
-        # Sort by final score
         ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
         
         print(f"Top 3 scores: {[f'{score:.4f}' for _, score in ranked[:3]]}")
         
-        #Semantic deduplication - remove highly similar docs
         filtered_ranked = []
         seen_docs = []
         ranked_embs = get_embedding_model().encode(
@@ -265,7 +253,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
 
             for seen_doc_emb in seen_docs:
                 similarity = util.cos_sim(doc_emb, seen_doc_emb)[0].item()
-                # If similarity exceeds threshold, treat as duplicate/near-duplicate
                 if similarity > cons.SEMANTIC_DUPLICATE_THRESHOLD:
                     is_duplicate = True
                     break
@@ -276,7 +263,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
         
         ranked = filtered_ranked
         
-        # URL-based deduplication - ensure each source appears only once
         url_dedup = {}
         for doc, score in ranked:
             url = doc.get("url", "N/A") if isinstance(doc, dict) else "N/A"
@@ -286,7 +272,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
         ranked = list(url_dedup.values())
         print(f" After URL deduplication: {len(ranked)} unique sources")
 
-        # Keep only confident matches so weak docs aren't used as context or sources
         confident_ranked = [(doc, score) for doc, score in ranked if score >= cons.CONFIDENCE_THRESHOLD]
         print(f"Above confidence threshold: {len(confident_ranked)}/{len(ranked)} docs")
         if confident_ranked:
