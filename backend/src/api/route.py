@@ -23,7 +23,6 @@ router = APIRouter()
 
 
 def format_context(top_docs):
-    """Number each article and label it with title, source and date so the LLM can cite and date it."""
     parts = []
     for i, (doc, _) in enumerate(top_docs, 1):
         if not isinstance(doc, dict):
@@ -61,7 +60,6 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     if not await chat_exists(rdb, chat_id):
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # Load history BEFORE saving the new message, so the question isn't duplicated in the prompt
     history = await get_chat_messages(rdb, chat_id, last_n=cons.CHAT_HISTORY_SIZE)
     history = [m for m in history if m.get("content") != FETCH_FAILED_MESSAGE]
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history])
@@ -72,25 +70,20 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
     print(f"\n{'='*60}")
     print(f"User Query: '{message}'")
     
-    # 1. Correct typos using LLM (better than TextBlob)
     corrected_query = typo_corrector_agent(message)
     if corrected_query != message:
         print(f"LLM Typo Correction: '{message}' → '{corrected_query}'")
     else:
         print(f"No typos detected in query")
     
-    # 2. Rewrite into a standalone search query (resolves follow-ups like "what about its stock?")
     normalised_query = rewrite_query_agent(corrected_query, history_text)
     print(f"Normalized: '{normalised_query}'")
 
-    # 3. Extract keywords for GDELT search from the standalone query (stopword removal)
     gdelt_keywords = extract_keywords(normalised_query, correct_typos=False)
     print(f"Keywords: '{gdelt_keywords}'")
     
-    # 4. Check if KB needs updating (KB persistence: reuse KB if same keywords)
     kb_needs_update = should_update_kb(gdelt_keywords)
     
-    # 4b. Update knowledge base only if needed
     print(f"\nKB Persistence Check: kb_needs_update={kb_needs_update}")
     print(f"Fetching articles using keywords: '{gdelt_keywords}'")
     if kb_needs_update:
@@ -180,7 +173,6 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
             low_confidence = not use_context
 
             if use_context:
-                # Deduplicate sources by URL, keeping highest score
                 sources_dict = {}
                 for doc, score in top_docs:
                     url = doc.get("url", "N/A")

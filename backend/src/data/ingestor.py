@@ -13,10 +13,8 @@ GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 _last_gdelt_request = 0.0
 _gdelt_blocked_until = 0.0
 
-# Finance words that GNews should treat as alternatives, not all required
-# (e.g. "apple stock price" -> apple AND (stock OR shares)). "price" alone matches shopping deals.
-FINANCE_TERMS = {"stock", "stocks", "share", "shares", "price", "prices", "valuation", "market"}
 
+FINANCE_TERMS = {"stock", "stocks", "share", "shares", "price", "prices", "valuation", "market"}
 class Ingestor:
     def __init__(self, query):
         self.max_results = cons.GDELT_MAX_RESULTS
@@ -28,7 +26,6 @@ class Ingestor:
         headers = cons.HEADERS
 
         for attempt in range(retries):
-            # GDELT allows one request every 5 seconds
             wait = cons.GDELT_MIN_INTERVAL - (time.time() - _last_gdelt_request)
             if wait > 0:
                 time.sleep(wait)
@@ -50,10 +47,8 @@ class Ingestor:
             except requests.exceptions.RequestException as e:
                 print(f"Attempt {attempt+1} failed:", e)
 
-            # Back off harder after each failure (e.g. 6s, 12s, 24s)
             _last_gdelt_request = time.time() + cons.GDELT_MIN_INTERVAL * (2 ** attempt - 1)
 
-        # Skip GDELT for a while instead of waiting on it for every question
         global _gdelt_blocked_until
         _gdelt_blocked_until = time.time() + cons.GDELT_COOLDOWN
         print(f"GDELT request failed after retries - skipping GDELT for {cons.GDELT_COOLDOWN}s")
@@ -179,13 +174,11 @@ class Ingestor:
         if not raw_date:
             return None
 
-        # GDELT format, e.g. "20260924T134500Z"
         try:
             return datetime.strptime(raw_date, "%Y%m%dT%H%M%SZ")
         except ValueError:
             pass
 
-        # GNews format, e.g. "2026-09-24T13:45:00Z"
         try:
             return datetime.strptime(raw_date, "%Y-%m-%dT%H:%M:%SZ")
         except ValueError:
@@ -205,7 +198,6 @@ class Ingestor:
             if not text or not self.is_english(text):
                 return None
             
-            # Entity validation: ensure article mentions the search term
             if query:
                 query_lower = query.lower().strip('\"').strip()
                 text_lower = text.lower()
@@ -238,11 +230,11 @@ class Ingestor:
 
     def fetch_context_for_query(self):
         """Fetch articles for the query. Returns list of parsed articles with content."""
-        articles = self.get_gdelt_urls()
+        articles = self.get_gnews_urls()
 
         if not articles:
-            print(f"GDELT returned nothing for '{self.query}' - trying GNews...")
-            articles = self.get_gnews_urls()
+            print(f"GNews returned nothing for '{self.query}' - trying GDELT...")
+            articles = self.get_gdelt_urls()
 
         if not articles:
             print(f"No articles found for query: '{self.query}' - trying fallback...")

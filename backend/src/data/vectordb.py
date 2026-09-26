@@ -41,7 +41,7 @@ class VectorDB:
         self.index = faiss.IndexFlatIP(dim)
         self.index.add(embeddings)
 
-        # 3. Store full docs (not just text)
+        # 3. Store full docs
         self.texts = docs
         print(f"Vector DB built with {len(docs)} documents")
 
@@ -52,7 +52,6 @@ class VectorDB:
 
         faiss.write_index(self.index, "faiss.index")
         with open("texts.pkl", "wb") as f:
-            # Store the model name so an index built by a different model is not reused
             pickle.dump({"model": cons.EMBEDDING_MODEL, "docs": self.texts}, f)
         print(f"Vector DB saved ({len(self.texts)} docs)")
 
@@ -94,7 +93,6 @@ class VectorDB:
 
         results = []
         for idx, score in zip(I[0], D[0]):
-            # FAISS returns -1 when the index has fewer than k docs
             if idx < 0:
                 continue
             results.append((self.texts[idx], float(score)))

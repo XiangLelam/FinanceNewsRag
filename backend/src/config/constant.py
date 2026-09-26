@@ -11,7 +11,7 @@ GDELT_FALLBACK_QUERY = "stock market news"
 GDELT_MIN_INTERVAL = 6
 GDELT_TIMESPAN = "7d"
 GDELT_SORT = "HybridRel"
-GDELT_COOLDOWN = 300  # seconds to skip GDELT after it fails (e.g. rate limited) and go straight to GNews
+GDELT_COOLDOWN = 300
 
 GNEWS_URL = "https://gnews.io/api/v4/search"
 GNEWS_MAX_RESULTS = 10

@@ -19,7 +19,6 @@ client = ollama.Client(host=OLLAMA_HOST)
 
 
 def typo_corrector_agent(query):
-    """Correct typos in user query using LLM."""
     try:
         correction_prompt = TYPO_CORRECTION_PROMPT.format(query=query)
         
@@ -29,12 +28,9 @@ def typo_corrector_agent(query):
             stream=False
         )
         
-        # First line only - the model sometimes adds an explanation below
         corrected = response["message"]["content"].strip().split('\n')[0].strip().strip('"').strip()
-        # Drop notes the model appends, e.g. "... (No correction needed)"
         corrected = re.sub(r'\s*\([^)]*\)\s*$', '', corrected).strip()
 
-        # A typo fix barely changes the length - anything much longer is the model rewording/explaining
         if not corrected or len(corrected) > len(query) + 10:
             return query
 
@@ -49,10 +45,6 @@ def typo_corrector_agent(query):
 
 
 def extract_keywords_agent_llm(query):
-    """
-    Use LLM to extract main entities/keywords from query.
-    Fallback for complex queries where simple stopword removal fails.
-    """
     try:
         prompt = EXTRACT_KEYWORDS_PROMPT.format(query=query)
         
@@ -71,7 +63,6 @@ def extract_keywords_agent_llm(query):
 
 
 def rewrite_query_agent(query, history_text=""):
-    """Rewrite the query into a standalone search query, resolving follow-ups from chat history."""
     try:
         prompt = REWRITE_QUERY_PROMPT.format(
             query=query,
@@ -92,7 +83,6 @@ def rewrite_query_agent(query, history_text=""):
 
 
 def get_similar_queries_agent(query, num=3):
-    """Generate semantic variations of the query for multi-angle retrieval using LLM."""
     try:
         prompt = SIMILAR_QUERIES_PROMPT.format(query=query, num=num)
 
@@ -104,7 +94,6 @@ def get_similar_queries_agent(query, num=3):
         text = response["message"]["content"]
 
         queries = text.split("\n")
-        # Strip bullets/numbering like "- ", "* ", "1. ", "2) " and surrounding quotes
         queries = [re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', q).strip().strip('"').strip() for q in queries]
         queries = [q for q in queries if q]
 
@@ -115,7 +104,6 @@ def get_similar_queries_agent(query, num=3):
 
 
 def classify_document_relevance_agent(doc, user_query):
-    """Classify if document is relevant to user query using LLM."""
     try:
         doc_text = (doc.get("text", "") + " " + doc.get("title", "")).lower()
         doc_snippet = doc_text[:700]
