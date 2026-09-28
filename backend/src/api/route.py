@@ -22,6 +22,18 @@ import src.config.constant as cons
 router = APIRouter()
 
 
+def doc_date(doc):
+    date = doc.get("date") if isinstance(doc, dict) else None
+    if isinstance(date, datetime):
+        return date
+    if isinstance(date, str):
+        try:
+            return datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    return None
+
+
 def format_context(top_docs):
     parts = []
     for i, (doc, _) in enumerate(top_docs, 1):
@@ -123,6 +135,8 @@ async def stream_chat(chat_id: str, message: str = Query(...), rdb=Depends(get_r
             top_docs = []
     
     use_context = is_confident(top_docs)
+
+    top_docs = sorted(top_docs, key=lambda d: doc_date(d[0]) or datetime.min, reverse=True)
 
     today = datetime.now().strftime("%A, %d %B %Y")
     history_for_prompt = history_text or "(no previous messages)"

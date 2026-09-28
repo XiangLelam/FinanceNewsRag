@@ -10,7 +10,11 @@ Rules:
   Never take facts or numbers from the Chat History - they may come from different articles.
 - Every number or fact you state must appear in the article you cite. Cite it by its number, e.g. [1] or [2].
 - Use each article's own published date exactly as given, and prefer newer articles if they disagree.
-- Start with the most important fact, then add supporting details.
+- ORDER: The articles are numbered newest first ([1] is the most recent). Write about them in that
+  same order: start with article [1], then [2], then [3]. Mention each article's news only once.
+- Only if the user asks for a figure (e.g. a stock price): your FIRST sentence must give the most recent
+  figure and its date. Older figures may follow after it. Otherwise don't mention missing figures.
+- Exception: if the user asks how something changed or developed over time, tell it in time order (oldest first).
 - If the articles only partly answer the question, answer what they cover and say what is missing.
 - If the question asks for live data (e.g. the current stock price), give the latest figure from the articles
   with its date, and add ONE short sentence that it may have changed since.
@@ -140,4 +144,25 @@ Guidelines:
   "latest news" means business, financial, stock or company news.
 
 Answer ONLY with: yes or no
+"""
+
+CLASSIFY_PASSAGES_PROMPT = """Label each news passage for a finance news assistant.
+
+User query: "{user_query}"
+
+Labels:
+- SUBJECT: about the subject of the query itself (its business, products, stock, plans or results)
+- DEAL: shopping deals, discounts, sales, low prices, giveaways, "best ... to buy" lists
+- OTHER: mainly about a different company or organisation (e.g. a retailer, supplier or partner that
+  sells or uses the subject's products), a different meaning of the name, or unrelated topics
+
+Examples (query "tesla news"):
+1. [Tesla shares fall] Tesla stock dropped 5% after quarterly deliveries missed estimates... -> SUBJECT
+2. [Best Tesla accessories deals] Save up to 40% on floor mats and chargers this week... -> DEAL
+3. [EV stocks to watch] The dealer group operates 40 showrooms and sells Tesla and BMW cars... -> OTHER
+
+Passages:
+{passages}
+
+Answer with one line per passage in the format "number: LABEL" and nothing else.
 """
