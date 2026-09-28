@@ -7,7 +7,6 @@ transformers
 torch
 lxml_html_clean
 faiss-cpu
-pymongo
 trafilatura
 langdetect
 langchain
