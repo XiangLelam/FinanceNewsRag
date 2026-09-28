@@ -6,6 +6,7 @@ from src.agent.agents import (
     extract_keywords_agent_llm,
     get_similar_queries_agent,
     classify_document_relevance_agent,
+    classify_passages_agent,
 )
 from datetime import datetime
 import src.config.constant as cons
@@ -181,19 +182,6 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
     docs_with_scores = list(unique_docs.values())
     docs = [doc for doc, _ in docs_with_scores]
     
-    validation_query = normalized_query or query
-    print(f"\nEntity validation: checking if docs are relevant to '{validation_query}'")
-    validated_docs = []
-    for doc, score in docs_with_scores:
-        if validate_entity_match(doc, validation_query, min_keywords=1):
-            validated_docs.append((doc, score))
-    
-    if not validated_docs:
-        print(f"No documents passed entity validation (too generic)")
-        return []
-    
-    docs = [doc for doc, _ in validated_docs]
-    print(f"Passed entity validation: {len(docs)}/{len(docs_with_scores)} docs")
     if docs:
         rank_queries = list({q for q in (query, normalized_query, keywords) if q})
         doc_texts = [
@@ -262,20 +250,45 @@ def rag_recall(query, normalized_query=None, keywords=None, top_k=3, skip_kb_upd
                 seen_docs.append(doc_emb)
         
         ranked = filtered_ranked
-        
+
+        confident_ranked = [(doc, score) for doc, score in ranked if score >= cons.CONFIDENCE_THRESHOLD]
+        print(f"Above confidence threshold: {len(confident_ranked)}/{len(ranked)} docs")
+        if not confident_ranked:
+            return ranked[:top_k]
+
+        validation_query = normalized_query or query
+       
+        candidates = []
+        per_article = {}
+        for doc, score in confident_ranked:
+            url = doc.get("url", "N/A") if isinstance(doc, dict) else "N/A"
+            if per_article.get(url, 0) >= cons.MAX_CHUNKS_PER_ARTICLE:
+                continue
+            per_article[url] = per_article.get(url, 0) + 1
+            candidates.append((doc, score))
+            if len(candidates) >= cons.MAX_VALIDATION_DOCS:
+                break
+        passages = [
+            (doc.get("title") or "", doc["text"]) if isinstance(doc, dict) else ("", str(doc))
+            for doc, _ in candidates
+        ]
+        print(f"\nEntity validation: checking top {len(candidates)} chunks against '{validation_query}'")
+        relevant = classify_passages_agent(passages, validation_query)
+        ranked = [candidates[i] for i in range(len(candidates)) if i in relevant]
+
+        if not ranked:
+            print(f"No documents passed entity validation")
+            return []
+        print(f"Passed entity validation: {len(ranked)}/{len(candidates)} chunks")
+
         url_dedup = {}
         for doc, score in ranked:
             url = doc.get("url", "N/A") if isinstance(doc, dict) else "N/A"
             if url not in url_dedup or url_dedup[url][1] < score:
                 url_dedup[url] = (doc, score)
-        
+
         ranked = list(url_dedup.values())
         print(f" After URL deduplication: {len(ranked)} unique sources")
-
-        confident_ranked = [(doc, score) for doc, score in ranked if score >= cons.CONFIDENCE_THRESHOLD]
-        print(f"Above confidence threshold: {len(confident_ranked)}/{len(ranked)} docs")
-        if confident_ranked:
-            ranked = confident_ranked
     else:
         ranked = []
 

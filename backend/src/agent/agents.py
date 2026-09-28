@@ -7,13 +7,15 @@ from src.config.prompt import (
     EXTRACT_KEYWORDS_PROMPT,
     REWRITE_QUERY_PROMPT,
     SIMILAR_QUERIES_PROMPT,
-    CLASSIFY_DOCUMENT_PROMPT
+    CLASSIFY_DOCUMENT_PROMPT,
+    CLASSIFY_PASSAGES_PROMPT
 )
 
 load_dotenv()
 
 OLLAMA_HOST = os.getenv('OLLAMA_HOST')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'mistral')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen3:8b')
+OLLAMA_HELPER_MODEL = os.getenv('OLLAMA_HELPER_MODEL', 'qwen3:4b-instruct')
 
 client = ollama.Client(host=OLLAMA_HOST)
 
@@ -23,7 +25,8 @@ def typo_corrector_agent(query):
         correction_prompt = TYPO_CORRECTION_PROMPT.format(query=query)
         
         response = client.chat(
-            model=OLLAMA_MODEL,
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
             messages=[{"role": "user", "content": correction_prompt}],
             stream=False
         )
@@ -49,7 +52,8 @@ def extract_keywords_agent_llm(query):
         prompt = EXTRACT_KEYWORDS_PROMPT.format(query=query)
         
         response = client.chat(
-            model=OLLAMA_MODEL,
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -70,7 +74,8 @@ def rewrite_query_agent(query, history_text=""):
         )
 
         response = client.chat(
-            model=OLLAMA_MODEL,
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
             messages=[{"role": "user", "content": prompt}]
         )
 
@@ -87,7 +92,8 @@ def get_similar_queries_agent(query, num=3):
         prompt = SIMILAR_QUERIES_PROMPT.format(query=query, num=num)
 
         response = client.chat(
-            model=OLLAMA_MODEL,
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
             messages=[{"role": "user", "content": prompt}]
         )
 
@@ -116,7 +122,8 @@ def classify_document_relevance_agent(doc, user_query):
         )
         
         response = client.chat(
-            model=OLLAMA_MODEL,
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
             messages=[{"role": "user", "content": classification_prompt}],
             stream=False
         )
@@ -133,11 +140,48 @@ def classify_document_relevance_agent(doc, user_query):
         return "relevant"
 
 
+DEAL_QUERY_WORDS = re.compile(r"\bdeals?\b|discount|\bsales?\b|coupon|\bcheap|\boffers?\b|prime day|black friday", re.IGNORECASE)
+
+
+def classify_passages_agent(passages, user_query):
+    try:
+        numbered = "\n\n".join(f"{i}. [{title}] {text}" for i, (title, text) in enumerate(passages, 1))
+        prompt = CLASSIFY_PASSAGES_PROMPT.format(user_query=user_query, passages=numbered)
+
+        response = client.chat(
+            model=OLLAMA_HELPER_MODEL,
+            think=False,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            options={"temperature": 0}
+        )
+
+        result = response["message"]["content"].strip()
+
+        labels = {
+            int(n): label.upper()
+            for n, label in re.findall(r'(\d+)\s*[:.)-]\s*\**\s*(SUBJECT|DEAL|OTHER)', result, re.IGNORECASE)
+        }
+        print(f"Passage labels: {labels}")
+
+        if not labels:
+            print("Could not parse passage labels, accepting all")
+            return set(range(len(passages)))
+
+        keep_labels = {"SUBJECT", "DEAL"} if DEAL_QUERY_WORDS.search(user_query) else {"SUBJECT"}
+        return {n - 1 for n, label in labels.items() if label in keep_labels and 1 <= n <= len(passages)}
+
+    except Exception as e:
+        print(f"Passage classification error: {e}, accepting all")
+        return set(range(len(passages)))
+
+
 def generate_answer_agent(prompt):
     """Generate answer using LLM with given prompt."""
     try:
         response = client.chat(
             model=OLLAMA_MODEL,
+            think=False,
             messages=[{"role": "user", "content": prompt}]
         )
 
